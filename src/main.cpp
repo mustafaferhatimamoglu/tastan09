@@ -215,6 +215,12 @@ MeasurementAggregator objectAggregator;
 bool startupMessageSent = false;
 unsigned long lastTelegramReport = 0;
 
+bool heatingRelayState = false;
+bool coolingRelayState = false;
+unsigned long lastRelaySwitchMillis = 0;
+unsigned long lastHeatingNotifyMillis = 0;
+unsigned long lastCoolingNotifyMillis = 0;
+
 bool telegramConfigured() {
   return config::ENABLE_TELEGRAM && strlen(config::TELEGRAM_BOT_TOKEN) > 0 && strlen(config::TELEGRAM_CHAT_ID) > 0;
 }
@@ -275,6 +281,20 @@ bool sendTelegramMessage(const String &text) {
   return true;
 }
 
+uint8_t inactiveLevel(uint8_t activeLevel) {
+  return activeLevel == HIGH ? LOW : HIGH;
+}
+
+void writeRelay(uint8_t pin, uint8_t activeLevel, bool enabled) {
+  const uint8_t level = enabled ? activeLevel : inactiveLevel(activeLevel);
+  digitalWrite(pin, level);
+}
+
+void notifyProtectionEvent(const String &message) {
+  Serial.println(message);
+  sendTelegramMessage(message);
+}
+
 void trySendStartupMessage() {
   if (startupMessageSent || !telegramConfigured() || WiFi.status() != WL_CONNECTED) {
     return;
@@ -291,7 +311,7 @@ String formatMeasurementReport(const MeasurementStats &ambientStats, const Measu
   }
 
   String message;
-  message.reserve(240);
+  message.reserve(280);
   message += F("Olcum Raporu\n");
   message += F("Ornek sayisi: ");
   message += static_cast<unsigned long>(objectStats.count);
@@ -313,6 +333,16 @@ String formatMeasurementReport(const MeasurementStats &ambientStats, const Measu
   message += String(ambientStats.max, 2);
   message += F("\n  Son: ");
   message += String(ambientStats.last, 2);
+  message += F("\nKoruma: ");
+  if (!config::ENABLE_PROTECTION) {
+    message += F("Devre disi");
+  } else if (heatingRelayState) {
+    message += F("Isitma aktif");
+  } else if (coolingRelayState) {
+    message += F("Sogutma aktif");
+  } else {
+    message += F("Normal");
+  }
   return message;
 }
 
@@ -330,6 +360,109 @@ bool readMeasurement(float &ambientC, float &objectC) {
   ambientC = ambient;
   objectC = object;
   return true;
+}
+
+void handleProtection(const MeasurementStats &objectStats, unsigned long now) {
+  if (!config::ENABLE_PROTECTION) {
+    return;
+  }
+  if (objectStats.count < config::PROTECTION_MIN_SAMPLES) {
+    return;
+  }
+
+  const float average = objectStats.average;
+  const float lower = config::OBJECT_TEMP_MIN_C;
+  const float upper = config::OBJECT_TEMP_MAX_C;
+  const float hysteresis = config::OBJECT_TEMP_HYSTERESIS_C;
+
+  bool desiredHeating = heatingRelayState;
+  bool desiredCooling = coolingRelayState;
+
+  if (heatingRelayState) {
+    desiredHeating = average < (lower + hysteresis);
+  } else {
+    desiredHeating = average <= lower;
+  }
+
+  if (coolingRelayState) {
+    desiredCooling = average > (upper - hysteresis);
+  } else {
+    desiredCooling = average >= upper;
+  }
+
+  if (desiredHeating && desiredCooling) {
+    if (average <= lower) {
+      desiredCooling = false;
+    } else if (average >= upper) {
+      desiredHeating = false;
+    } else {
+      desiredHeating = false;
+      desiredCooling = false;
+    }
+  }
+
+  const bool stateChanged = (desiredHeating != heatingRelayState) || (desiredCooling != coolingRelayState);
+  if (stateChanged) {
+    const bool switchingTooFast = lastRelaySwitchMillis != 0 && (now - lastRelaySwitchMillis) < config::RELAY_MIN_SWITCH_INTERVAL_MS;
+    if (switchingTooFast) {
+      return;
+    }
+
+    heatingRelayState = desiredHeating;
+    coolingRelayState = desiredCooling;
+    writeRelay(config::HEATING_RELAY_PIN, config::HEATING_RELAY_ACTIVE_LEVEL, heatingRelayState);
+    writeRelay(config::COOLING_RELAY_PIN, config::COOLING_RELAY_ACTIVE_LEVEL, coolingRelayState);
+    lastRelaySwitchMillis = now;
+
+    if (heatingRelayState) {
+      String message = F("UYARI: Ortalama nesne sicakligi alt sinirin altinda. Ortalama: ");
+      message += String(average, 2);
+      message += F(" C (< ");
+      message += String(lower, 2);
+      message += F(" C). Isitma baslatiliyor.");
+      notifyProtectionEvent(message);
+      lastHeatingNotifyMillis = now;
+    } else if (coolingRelayState) {
+      String message = F("UYARI: Ortalama nesne sicakligi ust sinirin ustunde. Ortalama: ");
+      message += String(average, 2);
+      message += F(" C (> ");
+      message += String(upper, 2);
+      message += F(" C). Sogutma baslatiliyor.");
+      notifyProtectionEvent(message);
+      lastCoolingNotifyMillis = now;
+    } else {
+      String message = F("Bilgi: Ortalama nesne sicakligi guvenli araliga dondu. Ortalama: ");
+      message += String(average, 2);
+      message += F(" C. Koruma devre disi.");
+      notifyProtectionEvent(message);
+      lastHeatingNotifyMillis = now;
+      lastCoolingNotifyMillis = now;
+    }
+  } else {
+    if (heatingRelayState && (now - lastHeatingNotifyMillis) >= config::PROTECTION_RENOTIFY_INTERVAL_MS) {
+      String message = F("Bilgi: Isitma koruma modu suruyor. Ortalama nesne sicakligi: ");
+      message += String(average, 2);
+      message += F(" C (< ");
+      message += String(lower, 2);
+      message += F(" C).");
+      notifyProtectionEvent(message);
+      lastHeatingNotifyMillis = now;
+    }
+    if (coolingRelayState && (now - lastCoolingNotifyMillis) >= config::PROTECTION_RENOTIFY_INTERVAL_MS) {
+      String message = F("Bilgi: Sogutma koruma modu suruyor. Ortalama nesne sicakligi: ");
+      message += String(average, 2);
+      message += F(" C (> ");
+      message += String(upper, 2);
+      message += F(" C).");
+      notifyProtectionEvent(message);
+      lastCoolingNotifyMillis = now;
+    }
+
+    if (!heatingRelayState && !coolingRelayState && objectStats.count >= config::PROTECTION_MIN_SAMPLES) {
+      lastHeatingNotifyMillis = now;
+      lastCoolingNotifyMillis = now;
+    }
+  }
 }
 
 void maybeProcessMeasurement(unsigned long now) {
@@ -365,6 +498,9 @@ void maybeProcessMeasurement(unsigned long now) {
   if (currentMode == LedMode::DataError) {
     setLedMode(LedMode::Normal);
   }
+
+  const MeasurementStats objectStats = objectAggregator.stats();
+  handleProtection(objectStats, now);
 }
 
 void maybeSendTelegramReport(unsigned long now) {
@@ -423,6 +559,18 @@ bool connectToWifi() {
   return false;
 }
 
+void initializeProtectionHardware() {
+  if (!config::ENABLE_PROTECTION) {
+    return;
+  }
+  pinMode(config::HEATING_RELAY_PIN, OUTPUT);
+  pinMode(config::COOLING_RELAY_PIN, OUTPUT);
+  heatingRelayState = false;
+  coolingRelayState = false;
+  writeRelay(config::HEATING_RELAY_PIN, config::HEATING_RELAY_ACTIVE_LEVEL, false);
+  writeRelay(config::COOLING_RELAY_PIN, config::COOLING_RELAY_ACTIVE_LEVEL, false);
+}
+
 void setup() {
   Serial.begin(115200);
   blinkController.begin(LED_PIN, LED_ACTIVE_LEVEL, LED_INACTIVE_LEVEL);
@@ -440,6 +588,7 @@ void setup() {
     }
   }
 
+  initializeProtectionHardware();
   connectToWifi();
 }
 
