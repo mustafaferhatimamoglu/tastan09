@@ -1,18 +1,16 @@
 #include <Arduino.h>
 
-// put function declarations here:
-int myFunction(int, int);
+constexpr uint8_t LED_PIN = LED_BUILTIN;
+constexpr unsigned long BLINK_INTERVAL_MS = 500;
 
 void setup() {
-  // put your setup code here, to run once:
-  int result = myFunction(2, 3);
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, HIGH); // NodeMCU LED is active low
 }
 
 void loop() {
-  // put your main code here, to run repeatedly:
-}
-
-// put function definitions here:
-int myFunction(int x, int y) {
-  return x + y;
+  digitalWrite(LED_PIN, LOW);
+  delay(BLINK_INTERVAL_MS);
+  digitalWrite(LED_PIN, HIGH);
+  delay(BLINK_INTERVAL_MS);
 }
