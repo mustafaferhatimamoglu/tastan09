@@ -6,10 +6,13 @@ constexpr char WIFI_PASSWORD[] = "hbJ39MkCMJa9"; // Wi-Fi password (fill in)
 constexpr unsigned long WIFI_CONNECT_TIMEOUT_MS = 20000;
 constexpr unsigned long WIFI_RETRY_INTERVAL_MS = 15000;
 
-constexpr bool ENABLE_DATA_FETCH = false;       // Set true when readMeasurement() is implemented
+constexpr uint8_t I2C_SDA_PIN = D2; // NodeMCU GPIO4
+constexpr uint8_t I2C_SCL_PIN = D1; // NodeMCU GPIO5
+
+constexpr bool ENABLE_DATA_FETCH = true;       // Set true when MLX90614 wiring is complete
 constexpr unsigned long MEASUREMENT_INTERVAL_MS = 1000; // Sample every second
 
-constexpr bool ENABLE_TELEGRAM = false;         // Enable after filling token and chat id
+constexpr bool ENABLE_TELEGRAM = true;         // Enable after filling token and chat id
 constexpr char TELEGRAM_BOT_TOKEN[] = "8323126146:AAGcQUHIvtDSvo4Y3o9ASztQAMT18pQLHWQ";      // Telegram bot token
 constexpr char TELEGRAM_CHAT_ID[] = "6069420562";        // Destination chat id
 constexpr unsigned long TELEGRAM_REPORT_INTERVAL_MS = 10000; // 10 seconds

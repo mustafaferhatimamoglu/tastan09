@@ -2,6 +2,8 @@
 #include <ESP8266WiFi.h>
 #include <ESP8266HTTPClient.h>
 #include <WiFiClientSecure.h>
+#include <Wire.h>
+#include <Adafruit_MLX90614.h>
 #include "config.h"
 
 constexpr uint8_t LED_PIN = LED_BUILTIN;
@@ -206,7 +208,10 @@ private:
   size_t count_{0};
 };
 
-MeasurementAggregator measurementAggregator;
+Adafruit_MLX90614 mlx90614;
+bool mlxReady = false;
+MeasurementAggregator ambientAggregator;
+MeasurementAggregator objectAggregator;
 bool startupMessageSent = false;
 unsigned long lastTelegramReport = 0;
 
@@ -280,31 +285,51 @@ void trySendStartupMessage() {
   }
 }
 
-String formatMeasurementReport(const MeasurementStats &stats) {
-  if (stats.count == 0) {
+String formatMeasurementReport(const MeasurementStats &ambientStats, const MeasurementStats &objectStats) {
+  if (objectStats.count == 0 || ambientStats.count == 0) {
     return String(config::TELEGRAM_NO_DATA_MESSAGE);
   }
 
   String message;
-  message.reserve(160);
+  message.reserve(240);
   message += F("Olcum Raporu\n");
   message += F("Ornek sayisi: ");
-  message += static_cast<unsigned long>(stats.count);
-  message += F("\nOrtalama: ");
-  message += String(stats.average, 2);
-  message += F("\nMin: ");
-  message += String(stats.min, 2);
-  message += F("\nMaks: ");
-  message += String(stats.max, 2);
-  message += F("\nSon: ");
-  message += String(stats.last, 2);
+  message += static_cast<unsigned long>(objectStats.count);
+  message += F("\nNesne (C)\n");
+  message += F("  Ortalama: ");
+  message += String(objectStats.average, 2);
+  message += F("\n  Min: ");
+  message += String(objectStats.min, 2);
+  message += F("\n  Maks: ");
+  message += String(objectStats.max, 2);
+  message += F("\n  Son: ");
+  message += String(objectStats.last, 2);
+  message += F("\nOrtam (C)\n");
+  message += F("  Ortalama: ");
+  message += String(ambientStats.average, 2);
+  message += F("\n  Min: ");
+  message += String(ambientStats.min, 2);
+  message += F("\n  Maks: ");
+  message += String(ambientStats.max, 2);
+  message += F("\n  Son: ");
+  message += String(ambientStats.last, 2);
   return message;
 }
 
-bool readMeasurement(float &value) {
-  // TODO: Replace with actual sensor acquisition logic. Return true and set value when a measurement is available.
-  value = 0.0f;
-  return false;
+bool readMeasurement(float &ambientC, float &objectC) {
+  if (!mlxReady) {
+    return false;
+  }
+
+  const float ambient = mlx90614.readAmbientTempC();
+  const float object = mlx90614.readObjectTempC();
+  if (isnan(ambient) || isnan(object)) {
+    return false;
+  }
+
+  ambientC = ambient;
+  objectC = object;
+  return true;
 }
 
 void maybeProcessMeasurement(unsigned long now) {
@@ -313,21 +338,30 @@ void maybeProcessMeasurement(unsigned long now) {
     return;
   }
 
+  if (!mlxReady) {
+    return;
+  }
+
   if (now - lastMeasurementAttempt < config::MEASUREMENT_INTERVAL_MS) {
     return;
   }
   lastMeasurementAttempt = now;
 
-  float measurement = 0.0f;
-  if (!readMeasurement(measurement)) {
+  float ambientC = 0.0f;
+  float objectC = 0.0f;
+  if (!readMeasurement(ambientC, objectC)) {
     Serial.println(F("Olcum alinamadi"));
     setLedMode(LedMode::DataError);
     return;
   }
 
-  measurementAggregator.addSample(measurement);
-  Serial.print(F("Olcum: "));
-  Serial.println(measurement, 2);
+  ambientAggregator.addSample(ambientC);
+  objectAggregator.addSample(objectC);
+  Serial.print(F("MLX90614 -> Nesne: "));
+  Serial.print(objectC, 2);
+  Serial.print(F(" C, Ortam: "));
+  Serial.print(ambientC, 2);
+  Serial.println(F(" C"));
   if (currentMode == LedMode::DataError) {
     setLedMode(LedMode::Normal);
   }
@@ -343,17 +377,19 @@ void maybeSendTelegramReport(unsigned long now) {
   }
   lastTelegramReport = now;
 
-  if (!measurementAggregator.hasSamples()) {
+  if (!objectAggregator.hasSamples() || !ambientAggregator.hasSamples()) {
     if (config::ENABLE_DATA_FETCH) {
       sendTelegramMessage(String(config::TELEGRAM_NO_DATA_MESSAGE));
     }
     return;
   }
 
-  const MeasurementStats stats = measurementAggregator.stats();
-  const String message = formatMeasurementReport(stats);
+  const MeasurementStats ambientStats = ambientAggregator.stats();
+  const MeasurementStats objectStats = objectAggregator.stats();
+  const String message = formatMeasurementReport(ambientStats, objectStats);
   if (sendTelegramMessage(message)) {
-    measurementAggregator.reset();
+    ambientAggregator.reset();
+    objectAggregator.reset();
   }
 }
 
@@ -391,6 +427,18 @@ void setup() {
   Serial.begin(115200);
   blinkController.begin(LED_PIN, LED_ACTIVE_LEVEL, LED_INACTIVE_LEVEL);
   setLedMode(LedMode::Normal);
+
+  if (config::ENABLE_DATA_FETCH) {
+    Wire.begin(config::I2C_SDA_PIN, config::I2C_SCL_PIN);
+    Wire.setClock(100000);
+    if (mlx90614.begin()) {
+      mlxReady = true;
+      Serial.println(F("MLX90614 hazir"));
+    } else {
+      Serial.println(F("MLX90614 baslatilamadi"));
+      setLedMode(LedMode::DataError);
+    }
+  }
 
   connectToWifi();
 }

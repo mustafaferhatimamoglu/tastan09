@@ -1,0 +1,11 @@
+NodeMCU (ESP8266) <-> GY-906 / MLX90614 baglanti pinleri
+------------------------------------------------------
+NodeMCU D2  (GPIO4, SDA)  ->  MLX90614 SDA
+NodeMCU D1  (GPIO5, SCL)  ->  MLX90614 SCL
+NodeMCU 3V3               ->  MLX90614 VIN (3V - 5.5V, onerilen 3.3V)
+NodeMCU GND               ->  MLX90614 GND
+
+Notlar:
+- Modulun VIN pinini NodeMCU'nun 3V3 hattina baglayin; sensor 5V toleransli olsa da ESP8266 icin I2C seviyeleri 3.3V'tur.
+- I2C hattina 4.7k ohm pull-up direncleri modul uzerinde hazirdir; ek direnc gerekmez.
+- Kablolari mumkun oldugunca kisa tutun ve guc gurultusunu azaltmak icin GND baglantisini saglam yapin.
