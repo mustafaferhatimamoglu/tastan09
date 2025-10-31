@@ -4,11 +4,14 @@
 #include <WiFiClientSecure.h>
 #include <Wire.h>
 #include <Adafruit_MLX90614.h>
+#include <ArduinoJson.h>
+#include <math.h>
 #include "config.h"
 
 constexpr uint8_t LED_PIN = LED_BUILTIN;
 constexpr uint8_t LED_ACTIVE_LEVEL = LOW;
 constexpr uint8_t LED_INACTIVE_LEVEL = HIGH;
+constexpr unsigned long TELEGRAM_POLL_INTERVAL_MS = 2000;
 
 struct Segment {
   uint16_t duration_ms;
@@ -208,21 +211,55 @@ private:
   size_t count_{0};
 };
 
+struct ProtectionSettings {
+  float minC;
+  float maxC;
+  float hysteresisC;
+  size_t minSamples;
+  unsigned long renotifyIntervalMs;
+};
+
 Adafruit_MLX90614 mlx90614;
 bool mlxReady = false;
 MeasurementAggregator ambientAggregator;
 MeasurementAggregator objectAggregator;
+ProtectionSettings protectionSettings{
+  config::OBJECT_TEMP_MIN_C,
+  config::OBJECT_TEMP_MAX_C,
+  config::OBJECT_TEMP_HYSTERESIS_C,
+  config::PROTECTION_MIN_SAMPLES,
+  config::PROTECTION_RENOTIFY_INTERVAL_MS
+};
 bool startupMessageSent = false;
 unsigned long lastTelegramReport = 0;
-
 bool heatingRelayState = false;
 bool coolingRelayState = false;
 unsigned long lastRelaySwitchMillis = 0;
 unsigned long lastHeatingNotifyMillis = 0;
 unsigned long lastCoolingNotifyMillis = 0;
+const String TELEGRAM_ALERT_CHAT_ID_STR = String(config::TELEGRAM_ALERT_CHAT_ID);
+const String TELEGRAM_INFO_CHAT_ID_STR = String(config::TELEGRAM_INFO_CHAT_ID);
+long telegramLastUpdateId = 0;
+unsigned long lastTelegramPoll = 0;
+
+bool telegramConfigured();
+String urlEncode(const String &value);
+bool sendTelegramMessage(const String &text);
+bool sendTelegramMessage(const String &text, const String &chatId);
+bool sendInfoTelegramMessage(const String &text);
+void notifyProtectionEvent(const String &message);
+String formatProtectionConfig();
+void processTelegramCommand(const String &text, const String &chatId);
+void pollTelegramUpdates(unsigned long now);
+bool readMeasurement(float &ambientC, float &objectC);
+void handleProtection(const MeasurementStats &objectStats, unsigned long now);
+void maybeProcessMeasurement(unsigned long now);
+void maybeSendTelegramReport(unsigned long now);
+bool connectToWifi();
+void initializeProtectionHardware();
 
 bool telegramConfigured() {
-  return config::ENABLE_TELEGRAM && strlen(config::TELEGRAM_BOT_TOKEN) > 0 && strlen(config::TELEGRAM_CHAT_ID) > 0;
+  return config::ENABLE_TELEGRAM && strlen(config::TELEGRAM_BOT_TOKEN) > 0;
 }
 
 String urlEncode(const String &value) {
@@ -246,8 +283,11 @@ String urlEncode(const String &value) {
   return encoded;
 }
 
-bool sendTelegramMessage(const String &text) {
+bool sendTelegramMessage(const String &text, const String &chatId) {
   if (!telegramConfigured()) {
+    return false;
+  }
+  if (chatId.length() == 0) {
     return false;
   }
   if (WiFi.status() != WL_CONNECTED) {
@@ -267,7 +307,7 @@ bool sendTelegramMessage(const String &text) {
   }
 
   https.addHeader(F("Content-Type"), F("application/x-www-form-urlencoded"));
-  const String payload = String(F("chat_id=")) + config::TELEGRAM_CHAT_ID + F("&text=") + urlEncode(text);
+  const String payload = String(F("chat_id=")) + chatId + F("&text=") + urlEncode(text);
   const int httpCode = https.POST(payload);
   if (httpCode < 200 || httpCode >= 300) {
     Serial.print(F("Telegram HTTP hatasi: "));
@@ -279,6 +319,23 @@ bool sendTelegramMessage(const String &text) {
   https.end();
   Serial.println(F("Telegram mesaji gonderildi"));
   return true;
+}
+
+bool sendTelegramMessage(const String &text) {
+  if (TELEGRAM_ALERT_CHAT_ID_STR.length() > 0) {
+    return sendTelegramMessage(text, TELEGRAM_ALERT_CHAT_ID_STR);
+  }
+  if (TELEGRAM_INFO_CHAT_ID_STR.length() > 0) {
+    return sendTelegramMessage(text, TELEGRAM_INFO_CHAT_ID_STR);
+  }
+  return false;
+}
+
+bool sendInfoTelegramMessage(const String &text) {
+  if (TELEGRAM_INFO_CHAT_ID_STR.length() > 0) {
+    return sendTelegramMessage(text, TELEGRAM_INFO_CHAT_ID_STR);
+  }
+  return sendTelegramMessage(text);
 }
 
 uint8_t inactiveLevel(uint8_t activeLevel) {
@@ -300,9 +357,34 @@ void trySendStartupMessage() {
     return;
   }
 
-  if (sendTelegramMessage(String(config::TELEGRAM_START_MESSAGE))) {
+  if (sendInfoTelegramMessage(String(config::TELEGRAM_START_MESSAGE))) {
     startupMessageSent = true;
   }
+}
+
+String formatProtectionConfig() {
+  String message;
+  message.reserve(320);
+  message += F("Koruma Ayarlari\n");
+  message += F("- min: ");
+  message += String(protectionSettings.minC, 2);
+  message += F(" C\n- max: ");
+  message += String(protectionSettings.maxC, 2);
+  message += F(" C\n- histerezis: ");
+  message += String(protectionSettings.hysteresisC, 2);
+  message += F(" C\n- min ornek sayisi: ");
+  message += static_cast<unsigned long>(protectionSettings.minSamples);
+  message += F("\n- renotify: ");
+  message += protectionSettings.renotifyIntervalMs / 1000UL;
+  message += F(" sn\n\nKomutlar:\n");
+  message += F("config\n");
+  message += F("set min <deger_C>\n");
+  message += F("set max <deger_C>\n");
+  message += F("set hysteresis <deger_C>\n");
+  message += F("set minsamples <tam_sayi>\n");
+  message += F("set renotify <saniye>\n");
+  message += F("\nNot: min < max olmali, histerezis pozitif ve aralik icinde olmalidir.");
+  return message;
 }
 
 String formatMeasurementReport(const MeasurementStats &ambientStats, const MeasurementStats &objectStats) {
@@ -311,7 +393,7 @@ String formatMeasurementReport(const MeasurementStats &ambientStats, const Measu
   }
 
   String message;
-  message.reserve(280);
+  message.reserve(320);
   message += F("Olcum Raporu\n");
   message += F("Ornek sayisi: ");
   message += static_cast<unsigned long>(objectStats.count);
@@ -343,6 +425,13 @@ String formatMeasurementReport(const MeasurementStats &ambientStats, const Measu
   } else {
     message += F("Normal");
   }
+  message += F("\nSinirlar: ");
+  message += String(protectionSettings.minC, 2);
+  message += F(" - ");
+  message += String(protectionSettings.maxC, 2);
+  message += F(" C, histerezis: ");
+  message += String(protectionSettings.hysteresisC, 2);
+  message += F(" C");
   return message;
 }
 
@@ -362,18 +451,261 @@ bool readMeasurement(float &ambientC, float &objectC) {
   return true;
 }
 
+bool isValidNumber(const String &value, bool allowDecimal) {
+  if (value.length() == 0) {
+    return false;
+  }
+  bool seenDigit = false;
+  bool seenDecimal = false;
+  size_t start = (value[0] == '-' ? 1 : 0);
+  for (size_t i = start; i < value.length(); ++i) {
+    const char c = value[i];
+    if (c >= '0' && c <= '9') {
+      seenDigit = true;
+      continue;
+    }
+    if (allowDecimal && c == '.' && !seenDecimal) {
+      seenDecimal = true;
+      continue;
+    }
+    return false;
+  }
+  return seenDigit;
+}
+
+bool isAuthorizedChat(const String &chatId) {
+  if (chatId.length() == 0) {
+    return false;
+  }
+  if (TELEGRAM_ALERT_CHAT_ID_STR.length() > 0 && chatId == TELEGRAM_ALERT_CHAT_ID_STR) {
+    return true;
+  }
+  if (TELEGRAM_INFO_CHAT_ID_STR.length() > 0 && chatId == TELEGRAM_INFO_CHAT_ID_STR) {
+    return true;
+  }
+  if (TELEGRAM_ALERT_CHAT_ID_STR.length() == 0 && TELEGRAM_INFO_CHAT_ID_STR.length() == 0) {
+    return true;
+  }
+  return false;
+}
+
+void processTelegramCommand(const String &text, const String &chatId) {
+  String trimmed = text;
+  trimmed.trim();
+  if (trimmed.length() == 0) {
+    return;
+  }
+
+  String lower = trimmed;
+  lower.toLowerCase();
+  const unsigned long now = millis();
+
+  if (lower == F("config")) {
+    sendTelegramMessage(formatProtectionConfig(), chatId);
+    return;
+  }
+
+  if (!lower.startsWith(F("set "))) {
+    sendTelegramMessage(F("Bilinmeyen komut. 'config' veya 'set ...' kullanin."), chatId);
+    return;
+  }
+
+  const int keyStart = 4;
+  const int spaceIndex = lower.indexOf(' ', keyStart);
+  if (spaceIndex < 0) {
+    sendTelegramMessage(F("Eksik parametre. Ornek: set min 22.5"), chatId);
+    return;
+  }
+
+  const String key = lower.substring(keyStart, spaceIndex);
+  String valueText = trimmed.substring(spaceIndex + 1);
+  valueText.trim();
+  if (valueText.length() == 0) {
+    sendTelegramMessage(F("Deger bulunamadi. Ornek: set max 28.0"), chatId);
+    return;
+  }
+
+  bool updated = false;
+  String response;
+
+  if (key == F("min")) {
+    if (!isValidNumber(valueText, true)) {
+      sendTelegramMessage(F("Gecersiz sayi. Ondalik icin nokta kullanin."), chatId);
+      return;
+    }
+    const float newMin = valueText.toFloat();
+    if (newMin >= protectionSettings.maxC) {
+      sendTelegramMessage(F("Min degeri maksimumdan kucuk olmali."), chatId);
+      return;
+    }
+    protectionSettings.minC = newMin;
+    response = F("Ayar guncellendi: min = ");
+    response += String(newMin, 2);
+    response += F(" C");
+    updated = true;
+  } else if (key == F("max")) {
+    if (!isValidNumber(valueText, true)) {
+      sendTelegramMessage(F("Gecersiz sayi. Ondalik icin nokta kullanin."), chatId);
+      return;
+    }
+    const float newMax = valueText.toFloat();
+    if (newMax <= protectionSettings.minC) {
+      sendTelegramMessage(F("Max degeri minimumdan buyuk olmali."), chatId);
+      return;
+    }
+    protectionSettings.maxC = newMax;
+    response = F("Ayar guncellendi: max = ");
+    response += String(newMax, 2);
+    response += F(" C");
+    updated = true;
+  } else if (key == F("hysteresis")) {
+    if (!isValidNumber(valueText, true)) {
+      sendTelegramMessage(F("Gecersiz sayi. Ondalik icin nokta kullanin."), chatId);
+      return;
+    }
+    const float newH = valueText.toFloat();
+    const float span = protectionSettings.maxC - protectionSettings.minC;
+    if (newH <= 0.0f || newH >= span) {
+      sendTelegramMessage(F("Histerezis pozitif olmali ve araligin tamamindan kucuk olmali."), chatId);
+      return;
+    }
+    protectionSettings.hysteresisC = newH;
+    response = F("Ayar guncellendi: histerezis = ");
+    response += String(newH, 2);
+    response += F(" C");
+    updated = true;
+  } else if (key == F("minsamples")) {
+    if (!isValidNumber(valueText, false)) {
+      sendTelegramMessage(F("Gecersiz tam sayi."), chatId);
+      return;
+    }
+    const long newSamples = valueText.toInt();
+    if (newSamples < 1 || newSamples > 3600) {
+      sendTelegramMessage(F("minSamples 1 ile 3600 arasinda olmali."), chatId);
+      return;
+    }
+    protectionSettings.minSamples = static_cast<size_t>(newSamples);
+    response = F("Ayar guncellendi: min ornek sayisi = ");
+    response += static_cast<unsigned long>(protectionSettings.minSamples);
+    updated = true;
+  } else if (key == F("renotify")) {
+    if (!isValidNumber(valueText, false)) {
+      sendTelegramMessage(F("Gecersiz tam sayi."), chatId);
+      return;
+    }
+    const long seconds = valueText.toInt();
+    if (seconds < 10 || seconds > 86400) {
+      sendTelegramMessage(F("renotify 10 ile 86400 saniye arasinda olmali."), chatId);
+      return;
+    }
+    protectionSettings.renotifyIntervalMs = static_cast<unsigned long>(seconds) * 1000UL;
+    response = F("Ayar guncellendi: renotify = ");
+    response += seconds;
+    response += F(" sn");
+    updated = true;
+  } else {
+    sendTelegramMessage(F("Bilinmeyen ayar anahtari. 'config' yazarak yardim alabilirsiniz."), chatId);
+    return;
+  }
+
+  if (updated) {
+    sendTelegramMessage(response, chatId);
+    handleProtection(objectAggregator.stats(), now);
+  }
+}
+
+void pollTelegramUpdates(unsigned long now) {
+  if (!telegramConfigured() || WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+  if (now - lastTelegramPoll < TELEGRAM_POLL_INTERVAL_MS) {
+    return;
+  }
+  lastTelegramPoll = now;
+
+  WiFiClientSecure client;
+  if (config::TELEGRAM_ALLOW_INSECURE_TLS) {
+    client.setInsecure();
+  }
+
+  HTTPClient https;
+  String url = String(F("https://api.telegram.org/bot")) + config::TELEGRAM_BOT_TOKEN + F("/getUpdates?timeout=0");
+  if (telegramLastUpdateId > 0) {
+    url += F("&offset=");
+    url += String(telegramLastUpdateId + 1);
+  }
+
+  if (!https.begin(client, url)) {
+    Serial.println(F("Telegram: getUpdates baslatilamadi"));
+    return;
+  }
+
+  const int httpCode = https.GET();
+  if (httpCode != HTTP_CODE_OK) {
+    Serial.print(F("Telegram getUpdates HTTP hatasi: "));
+    Serial.println(httpCode);
+    https.end();
+    return;
+  }
+
+  const String payload = https.getString();
+  https.end();
+  if (payload.length() == 0) {
+    return;
+  }
+
+  DynamicJsonDocument doc(4096);
+  const DeserializationError error = deserializeJson(doc, payload);
+  if (error) {
+    Serial.print(F("Telegram JSON hatasi: "));
+    Serial.println(error.c_str());
+    return;
+  }
+
+  if (!doc.containsKey("result")) {
+    return;
+  }
+
+  for (JsonObject update : doc["result"].as<JsonArray>()) {
+    const long updateId = update["update_id"] | 0;
+    if (updateId <= telegramLastUpdateId) {
+      continue;
+    }
+    telegramLastUpdateId = updateId;
+
+    JsonObject messageObj = update["message"].as<JsonObject>();
+    if (messageObj.isNull()) {
+      continue;
+    }
+
+    const String chatId = messageObj["chat"]["id"].as<String>();
+    if (!isAuthorizedChat(chatId)) {
+      continue;
+    }
+
+    String text = messageObj["text"] | "";
+    text.trim();
+    if (text.length() == 0) {
+      continue;
+    }
+
+    processTelegramCommand(text, chatId);
+  }
+}
+
 void handleProtection(const MeasurementStats &objectStats, unsigned long now) {
   if (!config::ENABLE_PROTECTION) {
     return;
   }
-  if (objectStats.count < config::PROTECTION_MIN_SAMPLES) {
+  if (objectStats.count < protectionSettings.minSamples) {
     return;
   }
 
   const float average = objectStats.average;
-  const float lower = config::OBJECT_TEMP_MIN_C;
-  const float upper = config::OBJECT_TEMP_MAX_C;
-  const float hysteresis = config::OBJECT_TEMP_HYSTERESIS_C;
+  const float lower = protectionSettings.minC;
+  const float upper = protectionSettings.maxC;
+  const float hysteresis = protectionSettings.hysteresisC;
+  const float mid = (lower + upper) * 0.5f;
 
   bool desiredHeating = heatingRelayState;
   bool desiredCooling = coolingRelayState;
@@ -388,6 +720,12 @@ void handleProtection(const MeasurementStats &objectStats, unsigned long now) {
     desiredCooling = average > (upper - hysteresis);
   } else {
     desiredCooling = average >= upper;
+  }
+
+  const bool nearCenter = (average > lower && average < upper && fabsf(average - mid) <= hysteresis);
+  if ((heatingRelayState || coolingRelayState) && nearCenter) {
+    desiredHeating = false;
+    desiredCooling = false;
   }
 
   if (desiredHeating && desiredCooling) {
@@ -439,7 +777,7 @@ void handleProtection(const MeasurementStats &objectStats, unsigned long now) {
       lastCoolingNotifyMillis = now;
     }
   } else {
-    if (heatingRelayState && (now - lastHeatingNotifyMillis) >= config::PROTECTION_RENOTIFY_INTERVAL_MS) {
+    if (heatingRelayState && (now - lastHeatingNotifyMillis) >= protectionSettings.renotifyIntervalMs) {
       String message = F("Bilgi: Isitma koruma modu suruyor. Ortalama nesne sicakligi: ");
       message += String(average, 2);
       message += F(" C (< ");
@@ -448,7 +786,7 @@ void handleProtection(const MeasurementStats &objectStats, unsigned long now) {
       notifyProtectionEvent(message);
       lastHeatingNotifyMillis = now;
     }
-    if (coolingRelayState && (now - lastCoolingNotifyMillis) >= config::PROTECTION_RENOTIFY_INTERVAL_MS) {
+    if (coolingRelayState && (now - lastCoolingNotifyMillis) >= protectionSettings.renotifyIntervalMs) {
       String message = F("Bilgi: Sogutma koruma modu suruyor. Ortalama nesne sicakligi: ");
       message += String(average, 2);
       message += F(" C (> ");
@@ -458,7 +796,7 @@ void handleProtection(const MeasurementStats &objectStats, unsigned long now) {
       lastCoolingNotifyMillis = now;
     }
 
-    if (!heatingRelayState && !coolingRelayState && objectStats.count >= config::PROTECTION_MIN_SAMPLES) {
+    if (!heatingRelayState && !coolingRelayState && objectStats.count >= protectionSettings.minSamples) {
       lastHeatingNotifyMillis = now;
       lastCoolingNotifyMillis = now;
     }
@@ -515,7 +853,7 @@ void maybeSendTelegramReport(unsigned long now) {
 
   if (!objectAggregator.hasSamples() || !ambientAggregator.hasSamples()) {
     if (config::ENABLE_DATA_FETCH) {
-      sendTelegramMessage(String(config::TELEGRAM_NO_DATA_MESSAGE));
+      sendInfoTelegramMessage(String(config::TELEGRAM_NO_DATA_MESSAGE));
     }
     return;
   }
@@ -523,7 +861,7 @@ void maybeSendTelegramReport(unsigned long now) {
   const MeasurementStats ambientStats = ambientAggregator.stats();
   const MeasurementStats objectStats = objectAggregator.stats();
   const String message = formatMeasurementReport(ambientStats, objectStats);
-  if (sendTelegramMessage(message)) {
+  if (sendInfoTelegramMessage(message)) {
     ambientAggregator.reset();
     objectAggregator.reset();
   }
@@ -609,6 +947,7 @@ void loop() {
   trySendStartupMessage();
   maybeProcessMeasurement(now);
   maybeSendTelegramReport(now);
+  pollTelegramUpdates(now);
 
   if (currentMode != LedMode::DataError && currentMode != LedMode::Normal) {
     setLedMode(LedMode::Normal);
