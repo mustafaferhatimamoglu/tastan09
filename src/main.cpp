@@ -7,6 +7,7 @@
 #include <ArduinoJson.h>
 #include <math.h>
 #include "config.h"
+#include <EEPROM.h>
 
 constexpr uint8_t LED_PIN = LED_BUILTIN;
 constexpr uint8_t LED_ACTIVE_LEVEL = LOW;
@@ -219,6 +220,23 @@ struct ProtectionSettings {
   unsigned long renotifyIntervalMs;
 };
 
+constexpr size_t EEPROM_STORAGE_SIZE = 128;
+constexpr uint32_t SETTINGS_SIGNATURE = 0x5450524F; // 'TPRO'
+constexpr uint16_t SETTINGS_VERSION = 1;
+bool eepromInitialized = false;
+
+struct StoredProtectionSettings {
+  uint32_t signature;
+  uint16_t version;
+  uint16_t reserved;
+  float minC;
+  float maxC;
+  float hysteresisC;
+  uint16_t minSamples;
+  uint32_t renotifyMs;
+  uint32_t checksum;
+};
+
 Adafruit_MLX90614 mlx90614;
 bool mlxReady = false;
 MeasurementAggregator ambientAggregator;
@@ -242,21 +260,101 @@ const String TELEGRAM_INFO_CHAT_ID_STR = String(config::TELEGRAM_INFO_CHAT_ID);
 long telegramLastUpdateId = 0;
 unsigned long lastTelegramPoll = 0;
 
-bool telegramConfigured();
-String urlEncode(const String &value);
-bool sendTelegramMessage(const String &text);
-bool sendTelegramMessage(const String &text, const String &chatId);
-bool sendInfoTelegramMessage(const String &text);
-void notifyProtectionEvent(const String &message);
-String formatProtectionConfig();
-void processTelegramCommand(const String &text, const String &chatId);
-void pollTelegramUpdates(unsigned long now);
-bool readMeasurement(float &ambientC, float &objectC);
-void handleProtection(const MeasurementStats &objectStats, unsigned long now);
-void maybeProcessMeasurement(unsigned long now);
-void maybeSendTelegramReport(unsigned long now);
-bool connectToWifi();
-void initializeProtectionHardware();
+uint32_t calculateChecksum(const StoredProtectionSettings &record) {
+  const uint8_t *bytes = reinterpret_cast<const uint8_t *>(&record);
+  const size_t length = sizeof(record) - sizeof(record.checksum);
+  uint32_t sum = 0;
+  for (size_t i = 0; i < length; ++i) {
+    sum = (sum << 1) ^ bytes[i];
+  }
+  return sum;
+}
+
+StoredProtectionSettings buildStoredSettingsFromCurrent() {
+  StoredProtectionSettings record{};
+  record.signature = SETTINGS_SIGNATURE;
+  record.version = SETTINGS_VERSION;
+  record.reserved = 0;
+  record.minC = protectionSettings.minC;
+  record.maxC = protectionSettings.maxC;
+  record.hysteresisC = protectionSettings.hysteresisC;
+  record.minSamples = static_cast<uint16_t>(protectionSettings.minSamples);
+  record.renotifyMs = static_cast<uint32_t>(protectionSettings.renotifyIntervalMs);
+  record.checksum = calculateChecksum(record);
+  return record;
+}
+
+bool validateProtectionSettings(const ProtectionSettings &settings) {
+  if (settings.minC >= settings.maxC) {
+    return false;
+  }
+  const float span = settings.maxC - settings.minC;
+  if (settings.hysteresisC <= 0.0f || settings.hysteresisC >= span) {
+    return false;
+  }
+  if (settings.minSamples < 1 || settings.minSamples > 3600) {
+    return false;
+  }
+  if (settings.renotifyIntervalMs < 10000UL || settings.renotifyIntervalMs > 86400000UL) {
+    return false;
+  }
+  return true;
+}
+
+bool initPersistentStorage() {
+  if (eepromInitialized) {
+    return true;
+  }
+  if (!EEPROM.begin(EEPROM_STORAGE_SIZE)) {
+    Serial.println(F("EEPROM baslatilamadi"));
+    return false;
+  }
+  eepromInitialized = true;
+  return true;
+}
+
+bool loadProtectionSettingsFromStorage() {
+  if (!initPersistentStorage()) {
+    return false;
+  }
+  StoredProtectionSettings record{};
+  EEPROM.get(0, record);
+  if (record.signature != SETTINGS_SIGNATURE || record.version != SETTINGS_VERSION) {
+    return false;
+  }
+  const uint32_t expectedChecksum = calculateChecksum(record);
+  if (record.checksum != expectedChecksum) {
+    Serial.println(F("EEPROM: koruma ayarlari checksum hatasi"));
+    return false;
+  }
+  ProtectionSettings candidate{
+    record.minC,
+    record.maxC,
+    record.hysteresisC,
+    static_cast<size_t>(record.minSamples),
+    static_cast<unsigned long>(record.renotifyMs)
+  };
+  if (!validateProtectionSettings(candidate)) {
+    Serial.println(F("EEPROM: koruma ayarlari gecersiz"));
+    return false;
+  }
+  protectionSettings = candidate;
+  return true;
+}
+
+bool saveProtectionSettingsToStorage() {
+  if (!initPersistentStorage()) {
+    return false;
+  }
+  StoredProtectionSettings record = buildStoredSettingsFromCurrent();
+  EEPROM.put(0, record);
+  if (!EEPROM.commit()) {
+    Serial.println(F("EEPROM: commit basarisiz"));
+    return false;
+  }
+  return true;
+}
+
 
 bool telegramConfigured() {
   return config::ENABLE_TELEGRAM && strlen(config::TELEGRAM_BOT_TOKEN) > 0;
@@ -383,7 +481,7 @@ String formatProtectionConfig() {
   message += F("set hysteresis <deger_C>\n");
   message += F("set minsamples <tam_sayi>\n");
   message += F("set renotify <saniye>\n");
-  message += F("\nNot: min < max olmali, histerezis pozitif ve aralik icinde olmalidir.");
+  message += F("\nNot: min < max olmali, histerezis pozitif ve aralik icinde olmalidir. Tum degisiklikler EEPROM'a kaydedilir.");
   return message;
 }
 
@@ -527,6 +625,7 @@ void processTelegramCommand(const String &text, const String &chatId) {
 
   bool updated = false;
   String response;
+  ProtectionSettings previousSettings = protectionSettings;
 
   if (key == F("min")) {
     if (!isValidNumber(valueText, true)) {
@@ -609,10 +708,26 @@ void processTelegramCommand(const String &text, const String &chatId) {
   }
 
   if (updated) {
+    if (!validateProtectionSettings(protectionSettings)) {
+      protectionSettings = previousSettings;
+      sendTelegramMessage(F("Ayar guncellenemedi: yeni degerler uyumsuz."), chatId);
+      return;
+    }
+
+    const bool saved = saveProtectionSettingsToStorage();
+    if (saved) {
+      response += F(" (kaydedildi)");
+    } else {
+      response += F(" (EEPROM kaydedilemedi, eski ayarlar korunuyor)");
+      protectionSettings = previousSettings;
+    }
+
     sendTelegramMessage(response, chatId);
+    sendTelegramMessage(formatProtectionConfig(), chatId);
     handleProtection(objectAggregator.stats(), now);
   }
 }
+
 
 void pollTelegramUpdates(unsigned long now) {
   if (!telegramConfigured() || WiFi.status() != WL_CONNECTED) {
@@ -913,6 +1028,12 @@ void setup() {
   Serial.begin(115200);
   blinkController.begin(LED_PIN, LED_ACTIVE_LEVEL, LED_INACTIVE_LEVEL);
   setLedMode(LedMode::Normal);
+
+  if (loadProtectionSettingsFromStorage()) {
+    Serial.println(F("EEPROM: koruma ayarlari yuklendi."));
+  } else if (saveProtectionSettingsToStorage()) {
+    Serial.println(F("EEPROM: varsayilan koruma ayarlari kaydedildi."));
+  }
 
   if (config::ENABLE_DATA_FETCH) {
     Wire.begin(config::I2C_SDA_PIN, config::I2C_SCL_PIN);

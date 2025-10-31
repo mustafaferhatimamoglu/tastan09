@@ -14,8 +14,8 @@ constexpr unsigned long MEASUREMENT_INTERVAL_MS = 1000; // Sample every second
 
 constexpr bool ENABLE_TELEGRAM = true;
 constexpr char TELEGRAM_BOT_TOKEN[] = "8323126146:AAGcQUHIvtDSvo4Y3o9ASztQAMT18pQLHWQ";
-constexpr char TELEGRAM_ALERT_CHAT_ID[] = "6069420562";   // Alerts (koruma, hata)
-constexpr char TELEGRAM_INFO_CHAT_ID[] = "";               // Olcum raporu / baslangic kanali (fill in)
+constexpr char TELEGRAM_ALERT_CHAT_ID[] = "-5023156896";   // Alerts (koruma, hata)
+constexpr char TELEGRAM_INFO_CHAT_ID[] = "-5014546274";               // Olcum raporu / baslangic kanali (fill in)
 constexpr unsigned long TELEGRAM_REPORT_INTERVAL_MS = 10000;
 constexpr bool TELEGRAM_ALLOW_INSECURE_TLS = true;
 constexpr char TELEGRAM_START_MESSAGE[] = "Cihaz baslatildi.";
