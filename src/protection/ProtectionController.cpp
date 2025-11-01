@@ -106,6 +106,7 @@ void ProtectionController::handleProtection(const sensor::MeasurementStats &obje
   }
 
   const float average = objectStats.average;
+  const float current = objectStats.last;
   const float lower = settings_.minC;
   const float upper = settings_.maxC;
   const float hysteresis = settings_.hysteresisC;
@@ -115,27 +116,27 @@ void ProtectionController::handleProtection(const sensor::MeasurementStats &obje
   bool desiredCooling = coolingRelayState_;
 
   if (heatingRelayState_) {
-    desiredHeating = average < (lower + hysteresis);
+    desiredHeating = current < (lower + hysteresis);
   } else {
-    desiredHeating = average <= lower;
+    desiredHeating = current <= lower;
   }
 
   if (coolingRelayState_) {
-    desiredCooling = average > (upper - hysteresis);
+    desiredCooling = current > (upper - hysteresis);
   } else {
-    desiredCooling = average >= upper;
+    desiredCooling = current >= upper;
   }
 
-  const bool nearCenter = (average > lower && average < upper && fabsf(average - mid) <= hysteresis);
+  const bool nearCenter = (current > lower && current < upper && fabsf(current - mid) <= hysteresis);
   if ((heatingRelayState_ || coolingRelayState_) && nearCenter) {
     desiredHeating = false;
     desiredCooling = false;
   }
 
   if (desiredHeating && desiredCooling) {
-    if (average <= lower) {
+    if (current <= lower) {
       desiredCooling = false;
-    } else if (average >= upper) {
+    } else if (current >= upper) {
       desiredHeating = false;
     } else {
       desiredHeating = false;
@@ -158,23 +159,29 @@ void ProtectionController::handleProtection(const sensor::MeasurementStats &obje
     lastRelaySwitchMillis_ = now;
 
     if (heatingRelayState_) {
-      String message = F("UYARI: Ortalama nesne sicakligi alt sinirin altinda. Ortalama: ");
-      message += String(average, 2);
+      String message = F("UYARI: Nesne sicakligi alt sinirin altinda. Son: ");
+      message += String(current, 2);
       message += F(" C (< ");
       message += String(lower, 2);
-      message += F(" C). Isitma baslatiliyor.");
+      message += F(" C). Ortalama: ");
+      message += String(average, 2);
+      message += F(" C. Isitma baslatiliyor.");
       notify(message);
       lastHeatingNotifyMillis_ = now;
     } else if (coolingRelayState_) {
-      String message = F("UYARI: Ortalama nesne sicakligi ust sinirin ustunde. Ortalama: ");
-      message += String(average, 2);
+      String message = F("UYARI: Nesne sicakligi ust sinirin ustunde. Son: ");
+      message += String(current, 2);
       message += F(" C (> ");
       message += String(upper, 2);
-      message += F(" C). Sogutma baslatiliyor.");
+      message += F(" C). Ortalama: ");
+      message += String(average, 2);
+      message += F(" C. Sogutma baslatiliyor.");
       notify(message);
       lastCoolingNotifyMillis_ = now;
     } else {
-      String message = F("Bilgi: Ortalama nesne sicakligi guvenli araliga dondu. Ortalama: ");
+      String message = F("Bilgi: Nesne sicakligi guvenli araliga dondu. Son: ");
+      message += String(current, 2);
+      message += F(" C, ortalama: ");
       message += String(average, 2);
       message += F(" C. Koruma devre disi.");
       notify(message);
@@ -183,20 +190,24 @@ void ProtectionController::handleProtection(const sensor::MeasurementStats &obje
     }
   } else {
     if (heatingRelayState_ && (now - lastHeatingNotifyMillis_) >= settings_.renotifyIntervalMs) {
-      String message = F("Bilgi: Isitma koruma modu suruyor. Ortalama nesne sicakligi: ");
-      message += String(average, 2);
+      String message = F("Bilgi: Isitma koruma modu suruyor. Son olcum: ");
+      message += String(current, 2);
       message += F(" C (< ");
       message += String(lower, 2);
-      message += F(" C).");
+      message += F(" C). Ortalama: ");
+      message += String(average, 2);
+      message += F(" C.");
       notify(message);
       lastHeatingNotifyMillis_ = now;
     }
     if (coolingRelayState_ && (now - lastCoolingNotifyMillis_) >= settings_.renotifyIntervalMs) {
-      String message = F("Bilgi: Sogutma koruma modu suruyor. Ortalama nesne sicakligi: ");
-      message += String(average, 2);
+      String message = F("Bilgi: Sogutma koruma modu suruyor. Son olcum: ");
+      message += String(current, 2);
       message += F(" C (> ");
       message += String(upper, 2);
-      message += F(" C).");
+      message += F(" C). Ortalama: ");
+      message += String(average, 2);
+      message += F(" C.");
       notify(message);
       lastCoolingNotifyMillis_ = now;
     }

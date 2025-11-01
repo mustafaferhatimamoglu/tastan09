@@ -25,6 +25,8 @@ public:
 private:
   bool isAuthorizedChat(const String &chatId) const;
   bool sendMessageInternal(const String &text, const String &chatId);
+  bool sendToSecondary(const String &text, const String &avoid1, const String &avoid2);
+  bool broadcast(const String &text);
   static String urlEncode(const String &value);
 
   bool startupMessageSent_{false};
@@ -32,6 +34,7 @@ private:
   unsigned long lastPoll_{0};
   String alertChatId_;
   String infoChatId_;
+  String secondaryChatId_;
 };
 
 }  // namespace telegram

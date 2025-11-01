@@ -15,25 +15,30 @@ constexpr size_t TELEGRAM_MAX_JSON_SIZE = 4096;
 }
 
 TelegramService::TelegramService()
-    : alertChatId_(String(config::TELEGRAM_ALERT_CHAT_ID)), infoChatId_(String(config::TELEGRAM_INFO_CHAT_ID)) {}
+    : alertChatId_(String(config::TELEGRAM_ALERT_CHAT_ID)),
+      infoChatId_(String(config::TELEGRAM_INFO_CHAT_ID)),
+      secondaryChatId_(String(config::TELEGRAM_SECONDARY_CHAT_ID)) {}
 
 bool TelegramService::configured() const {
   return config::ENABLE_TELEGRAM && strlen(config::TELEGRAM_BOT_TOKEN) > 0;
 }
 
 bool TelegramService::sendAlert(const String &text) {
+  bool sent = false;
   if (alertChatId_.length() > 0) {
-    return sendMessageInternal(text, alertChatId_);
+    sent |= sendMessageInternal(text, alertChatId_);
+  } else if (infoChatId_.length() > 0) {
+    sent |= sendMessageInternal(text, infoChatId_);
   }
-  if (infoChatId_.length() > 0) {
-    return sendMessageInternal(text, infoChatId_);
-  }
-  return false;
+  sent |= sendToSecondary(text, alertChatId_, infoChatId_);
+  return sent;
 }
 
 bool TelegramService::sendInfo(const String &text) {
   if (infoChatId_.length() > 0) {
-    return sendMessageInternal(text, infoChatId_);
+    bool sent = sendMessageInternal(text, infoChatId_);
+    sent |= sendToSecondary(text, infoChatId_, alertChatId_);
+    return sent;
   }
   return sendAlert(text);
 }
@@ -47,7 +52,14 @@ void TelegramService::trySendStartupMessage() {
     return;
   }
 
-  if (sendInfo(String(config::TELEGRAM_START_MESSAGE))) {
+  bool sentAny = false;
+  if (strlen(config::TELEGRAM_START_MESSAGE) > 0) {
+    sentAny |= broadcast(String(config::TELEGRAM_START_MESSAGE));
+  }
+  if (strlen(config::TELEGRAM_USAGE_MESSAGE) > 0) {
+    sentAny |= broadcast(String(config::TELEGRAM_USAGE_MESSAGE));
+  }
+  if (sentAny) {
     startupMessageSent_ = true;
   }
 }
@@ -149,10 +161,37 @@ bool TelegramService::isAuthorizedChat(const String &chatId) const {
   if (infoChatId_.length() > 0 && chatId == infoChatId_) {
     return true;
   }
-  if (alertChatId_.length() == 0 && infoChatId_.length() == 0) {
+  if (secondaryChatId_.length() > 0 && chatId == secondaryChatId_) {
+    return true;
+  }
+  if (alertChatId_.length() == 0 && infoChatId_.length() == 0 && secondaryChatId_.length() == 0) {
     return true;
   }
   return false;
+}
+
+bool TelegramService::sendToSecondary(const String &text, const String &avoid1, const String &avoid2) {
+  if (secondaryChatId_.length() == 0) {
+    return false;
+  }
+  if ((avoid1.length() > 0 && secondaryChatId_ == avoid1) || (avoid2.length() > 0 && secondaryChatId_ == avoid2)) {
+    return false;
+  }
+  return sendMessageInternal(text, secondaryChatId_);
+}
+
+bool TelegramService::broadcast(const String &text) {
+  bool sent = false;
+  if (alertChatId_.length() > 0) {
+    sent |= sendMessageInternal(text, alertChatId_);
+  }
+  if (infoChatId_.length() > 0 && infoChatId_ != alertChatId_) {
+    sent |= sendMessageInternal(text, infoChatId_);
+  }
+  if (secondaryChatId_.length() > 0 && secondaryChatId_ != alertChatId_ && secondaryChatId_ != infoChatId_) {
+    sent |= sendMessageInternal(text, secondaryChatId_);
+  }
+  return sent;
 }
 
 bool TelegramService::sendMessageInternal(const String &text, const String &chatId) {

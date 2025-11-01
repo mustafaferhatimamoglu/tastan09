@@ -10,15 +10,24 @@ constexpr uint8_t I2C_SDA_PIN = D2; // NodeMCU GPIO4
 constexpr uint8_t I2C_SCL_PIN = D1; // NodeMCU GPIO5
 
 constexpr bool ENABLE_DATA_FETCH = true;       // Enable MLX90614 measurements
-constexpr unsigned long MEASUREMENT_INTERVAL_MS = 1000; // Sample every second
+constexpr unsigned long MEASUREMENT_INTERVAL_MS = 1500; // Sample every second
 
 constexpr bool ENABLE_TELEGRAM = true;
 constexpr char TELEGRAM_BOT_TOKEN[] = "8323126146:AAGcQUHIvtDSvo4Y3o9ASztQAMT18pQLHWQ";
-constexpr char TELEGRAM_ALERT_CHAT_ID[] = "-5023156896";   // Alerts (koruma, hata)
-constexpr char TELEGRAM_INFO_CHAT_ID[] = "-5014546274";               // Olcum raporu / baslangic kanali (fill in)
-constexpr unsigned long TELEGRAM_REPORT_INTERVAL_MS = 10000;
+constexpr char TELEGRAM_ALERT_CHAT_ID[] = "-5023156896";   // Koruma ve hata bildirimleri
+constexpr char TELEGRAM_INFO_CHAT_ID[] = "-5014546274";           // Rapor kanali
+constexpr char TELEGRAM_SECONDARY_CHAT_ID[] = "6069420562";              // Ek komut/bildirim kanali (opsiyonel)
+constexpr unsigned long TELEGRAM_REPORT_INTERVAL_MS = 20000;
 constexpr bool TELEGRAM_ALLOW_INSECURE_TLS = true;
 constexpr char TELEGRAM_START_MESSAGE[] = "Cihaz baslatildi.";
+constexpr char TELEGRAM_USAGE_MESSAGE[] =
+    "Komutlar:\n"
+    "config\n"
+    "set min <deger_C>\n"
+    "set max <deger_C>\n"
+    "set hysteresis <deger_C>\n"
+    "set minsamples <tam_sayi>\n"
+    "set renotify <saniye>";
 constexpr char TELEGRAM_NO_DATA_MESSAGE[] = "Son periyotta olcum verisi bulunamadi.";
 
 constexpr bool ENABLE_PROTECTION = true;
