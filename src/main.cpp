@@ -795,6 +795,8 @@ void pollTelegramUpdates(unsigned long now) {
 
     const String chatId = messageObj["chat"]["id"].as<String>();
     if (!isAuthorizedChat(chatId)) {
+      Serial.print(F("Telegram: yetkisiz chat: "));
+      Serial.println(chatId);
       continue;
     }
 
@@ -812,7 +814,14 @@ void handleProtection(const MeasurementStats &objectStats, unsigned long now) {
   if (!config::ENABLE_PROTECTION) {
     return;
   }
-  if (objectStats.count < protectionSettings.minSamples) {
+
+  const size_t sampleCount = objectStats.count;
+  if (sampleCount == 0) {
+    return;
+  }
+
+  const bool relayActive = heatingRelayState || coolingRelayState;
+  if (!relayActive && sampleCount < protectionSettings.minSamples) {
     return;
   }
 
@@ -911,13 +920,12 @@ void handleProtection(const MeasurementStats &objectStats, unsigned long now) {
       lastCoolingNotifyMillis = now;
     }
 
-    if (!heatingRelayState && !coolingRelayState && objectStats.count >= protectionSettings.minSamples) {
+    if (!heatingRelayState && !coolingRelayState && sampleCount >= protectionSettings.minSamples) {
       lastHeatingNotifyMillis = now;
       lastCoolingNotifyMillis = now;
     }
   }
 }
-
 void maybeProcessMeasurement(unsigned long now) {
   static unsigned long lastMeasurementAttempt = 0;
   if (!config::ENABLE_DATA_FETCH) {
