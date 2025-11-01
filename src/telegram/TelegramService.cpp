@@ -11,6 +11,7 @@
 namespace telegram {
 namespace {
 constexpr unsigned long TELEGRAM_POLL_INTERVAL_MS = 2000;
+constexpr size_t TELEGRAM_MAX_JSON_SIZE = 4096;
 }
 
 TelegramService::TelegramService()
@@ -92,7 +93,12 @@ void TelegramService::pollUpdates(unsigned long now, TelegramCommandProcessor &p
     return;
   }
 
-  DynamicJsonDocument doc(4096);
+  if (payload.length() > TELEGRAM_MAX_JSON_SIZE) {
+    Serial.println(F("Telegram: yanit verisi cok buyuk"));
+    return;
+  }
+
+  JsonDocument doc;
   const DeserializationError error = deserializeJson(doc, payload);
   if (error) {
     Serial.print(F("Telegram JSON hatasi: "));
@@ -100,7 +106,7 @@ void TelegramService::pollUpdates(unsigned long now, TelegramCommandProcessor &p
     return;
   }
 
-  if (!doc.containsKey("result")) {
+  if (!doc["result"].is<JsonArray>()) {
     return;
   }
 
@@ -210,4 +216,3 @@ String TelegramService::urlEncode(const String &value) {
 }
 
 }  // namespace telegram
-

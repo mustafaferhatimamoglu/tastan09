@@ -28,6 +28,16 @@ private:
     size_t length;
   };
 
+  static const Segment NORMAL_SEGMENTS[];
+  static const Segment WIFI_CONNECTING_SEGMENTS[];
+  static const Segment WIFI_ERROR_SEGMENTS[];
+  static const Segment DATA_ERROR_SEGMENTS[];
+
+  static const BlinkPattern NORMAL_PATTERN;
+  static const BlinkPattern WIFI_CONNECTING_PATTERN;
+  static const BlinkPattern WIFI_ERROR_PATTERN;
+  static const BlinkPattern DATA_ERROR_PATTERN;
+
   void applyCurrentSegment();
   const BlinkPattern &patternForMode(LedMode mode) const;
 

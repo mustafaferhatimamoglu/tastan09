@@ -46,13 +46,22 @@ StoredProtectionSettings buildRecord(const ProtectionSettings &settings) {
   return record;
 }
 
+bool beginEeprom(size_t size) {
+#if defined(ESP8266)
+  EEPROM.begin(size);
+  return true;
+#else
+  return EEPROM.begin(size);
+#endif
+}
+
 }  // namespace
 
 bool ProtectionSettingsStorage::init() {
   if (initialized_) {
     return true;
   }
-  if (!EEPROM.begin(EEPROM_STORAGE_SIZE)) {
+  if (!beginEeprom(EEPROM_STORAGE_SIZE)) {
     Serial.println(F("EEPROM baslatilamadi"));
     return false;
   }
@@ -109,4 +118,3 @@ bool ProtectionSettingsStorage::save(const ProtectionSettings &settings) {
 }
 
 }  // namespace protection
-

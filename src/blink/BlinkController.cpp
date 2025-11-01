@@ -5,20 +5,21 @@ namespace {
 constexpr uint16_t SHORT_PULSE_MS = 200;
 constexpr uint16_t LONG_PULSE_MS = 600;
 constexpr uint16_t PATTERN_PAUSE_MS = 1200;
+}
 
-constexpr BlinkController::Segment NORMAL_SEGMENTS[] = {
+const BlinkController::Segment BlinkController::NORMAL_SEGMENTS[] = {
     {1500, true},
     {1500, false},
 };
 
-constexpr BlinkController::Segment WIFI_CONNECTING_SEGMENTS[] = {
+const BlinkController::Segment BlinkController::WIFI_CONNECTING_SEGMENTS[] = {
     {SHORT_PULSE_MS, true},
     {SHORT_PULSE_MS, false},
     {SHORT_PULSE_MS, true},
     {LONG_PULSE_MS, false},
 };
 
-constexpr BlinkController::Segment WIFI_ERROR_SEGMENTS[] = {
+const BlinkController::Segment BlinkController::WIFI_ERROR_SEGMENTS[] = {
     {SHORT_PULSE_MS, true},
     {SHORT_PULSE_MS, false},
     {SHORT_PULSE_MS, true},
@@ -30,7 +31,7 @@ constexpr BlinkController::Segment WIFI_ERROR_SEGMENTS[] = {
     {PATTERN_PAUSE_MS, false},
 };
 
-constexpr BlinkController::Segment DATA_ERROR_SEGMENTS[] = {
+const BlinkController::Segment BlinkController::DATA_ERROR_SEGMENTS[] = {
     {SHORT_PULSE_MS, true},
     {SHORT_PULSE_MS, false},
     {LONG_PULSE_MS, true},
@@ -40,15 +41,19 @@ constexpr BlinkController::Segment DATA_ERROR_SEGMENTS[] = {
     {3000, false},
 };
 
-constexpr BlinkController::BlinkPattern NORMAL_PATTERN{NORMAL_SEGMENTS,
-                                                       sizeof(NORMAL_SEGMENTS) / sizeof(BlinkController::Segment)};
-constexpr BlinkController::BlinkPattern WIFI_CONNECTING_PATTERN{
-    WIFI_CONNECTING_SEGMENTS, sizeof(WIFI_CONNECTING_SEGMENTS) / sizeof(BlinkController::Segment)};
-constexpr BlinkController::BlinkPattern WIFI_ERROR_PATTERN{
-    WIFI_ERROR_SEGMENTS, sizeof(WIFI_ERROR_SEGMENTS) / sizeof(BlinkController::Segment)};
-constexpr BlinkController::BlinkPattern DATA_ERROR_PATTERN{
-    DATA_ERROR_SEGMENTS, sizeof(DATA_ERROR_SEGMENTS) / sizeof(BlinkController::Segment)};
-}  // namespace
+const BlinkController::BlinkPattern BlinkController::NORMAL_PATTERN{
+    BlinkController::NORMAL_SEGMENTS,
+    sizeof(BlinkController::NORMAL_SEGMENTS) / sizeof(BlinkController::NORMAL_SEGMENTS[0])};
+const BlinkController::BlinkPattern BlinkController::WIFI_CONNECTING_PATTERN{
+    BlinkController::WIFI_CONNECTING_SEGMENTS,
+    sizeof(BlinkController::WIFI_CONNECTING_SEGMENTS) /
+        sizeof(BlinkController::WIFI_CONNECTING_SEGMENTS[0])};
+const BlinkController::BlinkPattern BlinkController::WIFI_ERROR_PATTERN{
+    BlinkController::WIFI_ERROR_SEGMENTS,
+    sizeof(BlinkController::WIFI_ERROR_SEGMENTS) / sizeof(BlinkController::WIFI_ERROR_SEGMENTS[0])};
+const BlinkController::BlinkPattern BlinkController::DATA_ERROR_PATTERN{
+    BlinkController::DATA_ERROR_SEGMENTS,
+    sizeof(BlinkController::DATA_ERROR_SEGMENTS) / sizeof(BlinkController::DATA_ERROR_SEGMENTS[0])};
 
 void BlinkController::begin(uint8_t pin, uint8_t activeLevel, uint8_t inactiveLevel) {
   pin_ = pin;
